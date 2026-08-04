@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snapgene-deepreader"
+version = "0.1.0"
+description = "Enhanced SnapGene .dna reader with primer and alignable sequence parsing."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+  {name = "snapgene-deepreader contributors"}
+]
+dependencies = [
+  "biopython",
+  "html2text",
+  "xmltodict"
+]
+keywords = ["DNA", "SnapGene", "sequence", "primer", "alignment", "Biopython"]
+
+[project.urls]
+Homepage = "https://github.com/Edinburgh-Genome-Foundry/SnapGeneReader"
+
+[tool.setuptools.packages.find]
+include = ["snapgene_deepreader*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
