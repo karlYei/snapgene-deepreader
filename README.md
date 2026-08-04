@@ -4,6 +4,17 @@
 MIT-licensed SnapGeneReader project. It keeps the original high-level API while
 adding extraction of primer blocks and SnapGene alignable sequence blocks.
 
+## Origin and development
+
+This project is derived from the open-source
+[SnapGeneReader](https://github.com/Edinburgh-Genome-Foundry/SnapGeneReader)
+project by Edinburgh Genome Foundry, which is released under the MIT License.
+
+All changes that make this a separate package named `snapgene-deepreader` were
+developed entirely by an AI coding agent. The added work includes package
+renaming, primer block parsing, alignable sequence metadata parsing, zlib-backed
+alignable sequence extraction, tests, and project documentation.
+
 ## Install for local development
 
 ```bash

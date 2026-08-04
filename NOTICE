@@ -1,0 +1,13 @@
+snapgene-deepreader
+===================
+
+This project is derived from SnapGeneReader:
+
+    https://github.com/Edinburgh-Genome-Foundry/SnapGeneReader
+
+SnapGeneReader is an MIT-licensed open-source project originally written by
+Isaac Luo at the Cai Lab and maintained in the Edinburgh Genome Foundry fork.
+
+The separate snapgene-deepreader package, including the package rename, richer
+SnapGene block parsing, tests, and documentation in this repository, was
+developed entirely by an AI coding agent.
