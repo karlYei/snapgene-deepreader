@@ -4,7 +4,8 @@
 
 `snapgene-deepreader` is an enhanced SnapGene `.dna` parser based on the
 MIT-licensed SnapGeneReader project. It keeps the original high-level API while
-adding extraction of primer blocks and SnapGene alignable sequence blocks.
+adding extraction of primer blocks, SnapGene alignable sequence blocks, and
+SnapGene-saved comparison alignment data.
 
 ## Origin and development
 
@@ -15,7 +16,8 @@ project by Edinburgh Genome Foundry, which is released under the MIT License.
 All changes that make this a separate package named `snapgene-deepreader` were
 developed entirely by an AI coding agent. The added work includes package
 renaming, primer block parsing, alignable sequence metadata parsing, zlib-backed
-alignable sequence extraction, tests, and project documentation.
+alignable sequence extraction, BAM-backed comparison parsing, tests, and project
+documentation.
 
 ## Install for local development
 
@@ -32,6 +34,7 @@ data = snapgene_file_to_dict("example.dna")
 print(data["seq"])
 print(data["primers"])
 print(data["alignable_sequences"])
+print(data["comparison_alignments"])
 ```
 
 The returned dictionary keeps the original keys from `snapgene-reader`:
@@ -48,6 +51,10 @@ It also adds:
 
 - `primers`: parsed from SnapGene block `5`.
 - `alignable_sequences`: parsed from blocks `16` and `17`.
+- `comparison_alignments`: parsed from SnapGene block `27` when it contains a
+  BGZF/GZIP-compressed BAM alignment. Each BAM record includes CIGAR, sequence,
+  auxiliary tags, linked alignable sequence metadata, and a `variants` list
+  reconstructed against the SnapGene reference sequence.
 - `raw_blocks_summary`: block type, size, and byte offset for debugging.
 
 ## Compatibility

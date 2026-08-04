@@ -1,3 +1,4 @@
+import gzip
 import struct
 import zlib
 from io import StringIO
@@ -23,7 +24,82 @@ def _snapgene_header():
     return b"\x09" + struct.pack(">I", 14) + b"SnapGene" + struct.pack(">HHH", 1, 1, 1)
 
 
-def _write_minimal_file(path, include_rich_blocks=False):
+def _encode_bam_sequence(sequence):
+    codes = {
+        "=": 0,
+        "A": 1,
+        "C": 2,
+        "M": 3,
+        "G": 4,
+        "R": 5,
+        "S": 6,
+        "V": 7,
+        "T": 8,
+        "W": 9,
+        "Y": 10,
+        "H": 11,
+        "K": 12,
+        "D": 13,
+        "B": 14,
+        "N": 15,
+    }
+    encoded = bytearray()
+    for index in range(0, len(sequence), 2):
+        high = codes[sequence[index]]
+        low = codes[sequence[index + 1]] if index + 1 < len(sequence) else 0
+        encoded.append((high << 4) | low)
+    return bytes(encoded)
+
+
+def _minimal_bam():
+    header = b"@HD\tVN:1.6\tSO:unsorted\n"
+    reference_name = b"reference\x00"
+    bam = bytearray()
+    bam.extend(b"BAM\1")
+    bam.extend(struct.pack("<i", len(header)))
+    bam.extend(header)
+    bam.extend(struct.pack("<i", 1))
+    bam.extend(struct.pack("<i", len(reference_name)))
+    bam.extend(reference_name)
+    bam.extend(struct.pack("<i", 8))
+
+    qname = b"0\x00"
+    cigar_words = [
+        (4 << 4) | 0,  # 4M
+        (1 << 4) | 1,  # 1I
+        (4 << 4) | 0,  # 4M
+    ]
+    read_sequence = "ACGTTACGT"
+    qualities = bytes([255] * len(read_sequence))
+    aux = b"NMi" + struct.pack("<i", 1)
+    record = bytearray()
+    record.extend(
+        struct.pack(
+            "<iiBBHHHiiii",
+            0,
+            0,
+            len(qname),
+            60,
+            0,
+            len(cigar_words),
+            0,
+            len(read_sequence),
+            -1,
+            -1,
+            0,
+        )
+    )
+    record.extend(qname)
+    record.extend(struct.pack("<" + "I" * len(cigar_words), *cigar_words))
+    record.extend(_encode_bam_sequence(read_sequence))
+    record.extend(qualities)
+    record.extend(aux)
+    bam.extend(struct.pack("<i", len(record)))
+    bam.extend(record)
+    return bytes(bam)
+
+
+def _write_minimal_file(path, include_rich_blocks=False, include_comparison=False):
     parts = [
         _snapgene_header(),
         _block(0, b"\x01ACGTACGT"),
@@ -47,6 +123,8 @@ def _write_minimal_file(path, include_rich_blocks=False):
         compressed = zlib.compress(b"\x00ACGTACGT")
         align_sequence = struct.pack(">I", 0) + (b"\x00" * 32) + compressed
         parts.extend([_block(16, align_sequence), _block(17, align_metadata), _block(5, primers)])
+    if include_comparison:
+        parts.append(_block(27, gzip.compress(_minimal_bam())))
     path.write_bytes(b"".join(parts))
 
 
@@ -91,6 +169,36 @@ def test_parses_alignable_sequences_with_decompressed_bases(tmp_path):
     assert set(alignable["sequence"]).issubset(set("ACGTUNacgtun-"))
 
 
+def test_parses_comparison_alignment_bam_records(tmp_path):
+    file_path = tmp_path / "comparison.dna"
+    _write_minimal_file(file_path, include_rich_blocks=True, include_comparison=True)
+    data = snapgene_file_to_dict(str(file_path))
+
+    assert len(data["comparison_alignments"]) == 1
+    comparison = data["comparison_alignments"][0]
+    assert comparison["format"] == "BAM"
+    assert comparison["references"] == [{"id": 0, "name": "reference", "length": 8}]
+    assert len(comparison["records"]) == 1
+
+    record = comparison["records"][0]
+    assert record["qname"] == "0"
+    assert record["alignable_sequence_name"] == "read-1"
+    assert record["ref_name"] == "reference"
+    assert record["start"] == 1
+    assert record["cigar"] == "4M1I4M"
+    assert record["sequence"] == "ACGTTACGT"
+    assert record["aux"]["NM"] == 1
+    assert record["variants"] == [
+        {
+            "type": "insertion",
+            "after_ref_position": 4,
+            "read_position": 5,
+            "inserted_bases": "T",
+            "length": 1,
+        }
+    ]
+
+
 def test_local_paq1ex_fixture_if_present():
     if not PAQ1EX.exists():
         return
@@ -122,6 +230,7 @@ def test_files_without_rich_blocks_get_empty_lists(tmp_path):
     assert data["seq"] == "ACGTACGT"
     assert data["primers"] == []
     assert data["alignable_sequences"] == []
+    assert data["comparison_alignments"] == []
 
 
 def test_seqrecord_compatibility(tmp_path):

@@ -6,7 +6,7 @@
 MIT 许可证开源项目
 [SnapGeneReader](https://github.com/Edinburgh-Genome-Foundry/SnapGeneReader)
 开发。它保留原项目的高级 API，同时新增对 SnapGene 文件中引物 block 和
-对比序列 block 的解析。
+对比序列 block、以及 SnapGene 保存的对比结果数据的解析。
 
 ## 项目来源与开发说明
 
@@ -16,7 +16,7 @@ MIT 许可证开源项目
 
 将其独立为 `snapgene-deepreader` 包的全部改造均由 AI coding agent 完成，
 包括包名重命名、引物 block 解析、对比序列 metadata 解析、基于 zlib 的
-对比序列内容提取、测试以及项目文档。
+对比序列内容提取、基于 BAM 的对比结果解析、测试以及项目文档。
 
 ## 本地开发安装
 
@@ -33,6 +33,7 @@ data = snapgene_file_to_dict("example.dna")
 print(data["seq"])
 print(data["primers"])
 print(data["alignable_sequences"])
+print(data["comparison_alignments"])
 ```
 
 返回的字典保留 `snapgene-reader` 原有字段：
@@ -49,6 +50,9 @@ print(data["alignable_sequences"])
 
 - `primers`：来自 SnapGene block `5` 的引物信息。
 - `alignable_sequences`：来自 SnapGene blocks `16` 和 `17` 的对比序列信息。
+- `comparison_alignments`：来自 SnapGene block `27` 的对比结果信息；当该 block
+  包含 BGZF/GZIP 压缩的 BAM alignment 时，会解析 BAM record、CIGAR、read
+  sequence、aux tags，并根据 SnapGene 参考序列还原 `variants` 列表。
 - `raw_blocks_summary`：每个 SnapGene block 的类型、大小和文件偏移，用于调试未知 block。
 
 ## 兼容性

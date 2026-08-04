@@ -4,6 +4,7 @@ This module keeps the public API of ``snapgene-reader`` and adds support for
 primer and alignable sequence blocks observed in SnapGene ``*.dna`` files.
 """
 
+import gzip
 import re
 import struct
 import zlib
@@ -30,6 +31,10 @@ HTML_PARSER.single_line_break = True
 
 ZLIB_HEADER_RE = re.compile(b"\x78[\x01\x5e\x9c\xda]")
 DNA_BASES = set("ACGTUNacgtun-")
+BAM_MAGIC = b"BAM\1"
+GZIP_MAGIC = b"\x1f\x8b"
+CIGAR_OPS = "MIDNSHP=XB"
+BAM_SEQ_CODES = "=ACMGRSVTWYHKDBN"
 
 
 def parse(val):
@@ -285,6 +290,304 @@ def _merge_alignable_sequences(sequence_blocks, metadata_by_id):
     return merged
 
 
+def _read_cstring(blob, pos):
+    end = blob.index(0, pos)
+    return blob[pos:end].decode("utf-8", errors="replace"), end + 1
+
+
+def _decode_bam_sequence(blob, length):
+    bases = []
+    for byte in blob:
+        bases.append(BAM_SEQ_CODES[byte >> 4])
+        if len(bases) == length:
+            break
+        bases.append(BAM_SEQ_CODES[byte & 0xF])
+        if len(bases) == length:
+            break
+    return "".join(bases)
+
+
+def _decode_bam_aux(blob):
+    tags = {}
+    pos = 0
+    while pos + 3 <= len(blob):
+        tag = blob[pos : pos + 2].decode("ascii", errors="replace")
+        typ = chr(blob[pos + 2])
+        pos += 3
+        try:
+            if typ == "A":
+                value = chr(blob[pos])
+                pos += 1
+            elif typ in "cC":
+                value = struct.unpack("<b" if typ == "c" else "<B", blob[pos : pos + 1])[0]
+                pos += 1
+            elif typ in "sS":
+                value = struct.unpack("<h" if typ == "s" else "<H", blob[pos : pos + 2])[0]
+                pos += 2
+            elif typ in "iI":
+                value = struct.unpack("<i" if typ == "i" else "<I", blob[pos : pos + 4])[0]
+                pos += 4
+            elif typ == "f":
+                value = struct.unpack("<f", blob[pos : pos + 4])[0]
+                pos += 4
+            elif typ in "ZH":
+                end = blob.index(0, pos)
+                value = blob[pos:end].decode("ascii", errors="replace")
+                pos = end + 1
+            elif typ == "B":
+                subtype = chr(blob[pos])
+                count = struct.unpack("<I", blob[pos + 1 : pos + 5])[0]
+                pos += 5
+                sizes = {"c": 1, "C": 1, "s": 2, "S": 2, "i": 4, "I": 4, "f": 4}
+                size = sizes[subtype]
+                raw = blob[pos : pos + count * size]
+                pos += len(raw)
+                value = {"subtype": subtype, "count": count}
+            else:
+                value = {"unsupported_type": typ}
+                break
+        except Exception as error:
+            value = {"parse_error": str(error), "type": typ}
+            tags[tag] = value
+            break
+        tags[tag] = value
+    return tags
+
+
+def _cigar_to_string(cigar_ops):
+    return "".join(f"{length}{op}" for length, op in cigar_ops)
+
+
+def _variant_ref_position(ref_index, reference_length):
+    if reference_length:
+        return (ref_index % reference_length) + 1
+    return ref_index + 1
+
+
+def _call_variants_from_alignment(record, reference_sequence):
+    reference_length = len(reference_sequence)
+    if not reference_sequence or not record.get("sequence"):
+        return []
+
+    variants = []
+    read_pos = 0
+    ref_pos = record["pos"]
+    for length, op in record["cigar_ops"]:
+        if op in "M=X":
+            for _ in range(length):
+                ref_index = ref_pos % reference_length
+                ref_base = reference_sequence[ref_index].upper()
+                read_base = record["sequence"][read_pos].upper()
+                if read_base != "=" and ref_base != read_base:
+                    variants.append(
+                        {
+                            "type": "substitution",
+                            "ref_position": ref_index + 1,
+                            "read_position": read_pos + 1,
+                            "ref_base": ref_base,
+                            "read_base": read_base,
+                        }
+                    )
+                ref_pos += 1
+                read_pos += 1
+        elif op == "I":
+            inserted = record["sequence"][read_pos : read_pos + length]
+            variants.append(
+                {
+                    "type": "insertion",
+                    "after_ref_position": _variant_ref_position(ref_pos - 1, reference_length),
+                    "read_position": read_pos + 1,
+                    "inserted_bases": inserted,
+                    "length": length,
+                }
+            )
+            read_pos += length
+        elif op in "DN":
+            deleted = []
+            for _ in range(length):
+                ref_index = ref_pos % reference_length
+                deleted.append(reference_sequence[ref_index].upper())
+                ref_pos += 1
+            variants.append(
+                {
+                    "type": "deletion",
+                    "ref_start": _variant_ref_position(ref_pos - length, reference_length),
+                    "deleted_bases": "".join(deleted),
+                    "length": length,
+                }
+            )
+        elif op == "S":
+            read_pos += length
+        elif op in "HP":
+            continue
+    return variants
+
+
+def _parse_bam_payload(bam, block_summary, reference_sequence):
+    if not bam.startswith(BAM_MAGIC):
+        raise ValueError("Decompressed payload is not BAM.")
+
+    pos = 4
+    header_length = struct.unpack("<i", bam[pos : pos + 4])[0]
+    pos += 4
+    header_text = bam[pos : pos + header_length].decode("utf-8", errors="replace")
+    pos += header_length
+    reference_count = struct.unpack("<i", bam[pos : pos + 4])[0]
+    pos += 4
+
+    references = []
+    for ref_id in range(reference_count):
+        name_length = struct.unpack("<i", bam[pos : pos + 4])[0]
+        pos += 4
+        name = bam[pos : pos + name_length - 1].decode("utf-8", errors="replace")
+        pos += name_length
+        length = struct.unpack("<i", bam[pos : pos + 4])[0]
+        pos += 4
+        references.append({"id": ref_id, "name": name, "length": length})
+
+    records = []
+    while pos < len(bam):
+        block_size = struct.unpack("<i", bam[pos : pos + 4])[0]
+        pos += 4
+        record_blob = bam[pos : pos + block_size]
+        pos += block_size
+        if len(record_blob) < 32:
+            continue
+
+        (
+            ref_id,
+            ref_pos,
+            read_name_length,
+            mapq,
+            bin_value,
+            cigar_count,
+            flag,
+            read_length,
+            next_ref_id,
+            next_pos,
+            template_length,
+        ) = struct.unpack("<iiBBHHHiiii", record_blob[:32])
+        cursor = 32
+        read_name = record_blob[cursor : cursor + read_name_length - 1].decode(
+            "utf-8", errors="replace"
+        )
+        cursor += read_name_length
+
+        cigar_words = struct.unpack(
+            "<" + "I" * cigar_count, record_blob[cursor : cursor + 4 * cigar_count]
+        )
+        cursor += 4 * cigar_count
+        cigar_ops = [(word >> 4, CIGAR_OPS[word & 0xF]) for word in cigar_words]
+        encoded_sequence_length = (read_length + 1) // 2
+        sequence = _decode_bam_sequence(
+            record_blob[cursor : cursor + encoded_sequence_length], read_length
+        )
+        cursor += encoded_sequence_length
+        qualities = list(record_blob[cursor : cursor + read_length])
+        cursor += read_length
+        aux = _decode_bam_aux(record_blob[cursor:])
+
+        ref = references[ref_id] if 0 <= ref_id < len(references) else None
+        record = {
+            "qname": read_name,
+            "read_id": read_name,
+            "ref_id": ref_id,
+            "ref_name": ref["name"] if ref else None,
+            "pos": ref_pos,
+            "start": ref_pos + 1,
+            "mapq": mapq,
+            "bin": bin_value,
+            "flag": flag,
+            "read_length": read_length,
+            "cigar": _cigar_to_string(cigar_ops),
+            "cigar_ops": cigar_ops,
+            "sequence": sequence,
+            "qualities": qualities,
+            "next_ref_id": next_ref_id,
+            "next_pos": next_pos,
+            "template_length": template_length,
+            "aux": aux,
+            "variants": [],
+            "raw_block_type": block_summary["type"],
+            "raw_block_size": block_summary["size"],
+            "raw_block_offset": block_summary["offset"],
+        }
+        record["variants"] = _call_variants_from_alignment(record, reference_sequence)
+        records.append(record)
+
+    return {
+        "format": "BAM",
+        "header": header_text,
+        "references": references,
+        "records": records,
+        "raw_block_type": block_summary["type"],
+        "raw_block_size": block_summary["size"],
+        "raw_block_offset": block_summary["offset"],
+    }
+
+
+def _gzip_payloads(block_content):
+    offsets = []
+    start = 0
+    while True:
+        offset = block_content.find(GZIP_MAGIC, start)
+        if offset < 0:
+            break
+        offsets.append(offset)
+        start = offset + 1
+    if not offsets and block_content.startswith(BAM_MAGIC):
+        return [(0, block_content)]
+
+    payloads = []
+    for offset in offsets:
+        try:
+            payloads.append((offset, gzip.decompress(block_content[offset:])))
+        except Exception:
+            continue
+    return payloads
+
+
+def _parse_comparison_block(block_content, block_summary, reference_sequence):
+    comparisons = []
+    for compressed_offset, payload in _gzip_payloads(block_content):
+        if not payload.startswith(BAM_MAGIC):
+            continue
+        try:
+            parsed = _parse_bam_payload(payload, block_summary, reference_sequence)
+            parsed["compressed_offset"] = compressed_offset
+            comparisons.append(parsed)
+        except Exception as error:
+            comparisons.append(
+                {
+                    "parse_error": str(error),
+                    "compressed_offset": compressed_offset,
+                    "raw_block_type": block_summary["type"],
+                    "raw_block_size": block_summary["size"],
+                    "raw_block_offset": block_summary["offset"],
+                }
+            )
+    if not comparisons:
+        comparisons.append(
+            {
+                "parse_error": "No BAM payload found in comparison block.",
+                "raw_block_type": block_summary["type"],
+                "raw_block_size": block_summary["size"],
+                "raw_block_offset": block_summary["offset"],
+            }
+        )
+    return comparisons
+
+
+def _enrich_comparison_records(comparison_alignments, metadata_by_id):
+    for comparison in comparison_alignments:
+        for record in comparison.get("records", []):
+            metadata = metadata_by_id.get(record.get("qname"))
+            if metadata:
+                record["alignable_sequence_name"] = metadata.get("name")
+                record["alignable_sequence_trimmed_range"] = metadata.get("trimmed_range")
+                record["alignable_sequence_use"] = metadata.get("use")
+
+
 def snapgene_file_to_dict(filepath=None, fileobject=None):
     """Return a dictionary containing data from a SnapGene ``*.dna`` file."""
     close_file = False
@@ -313,6 +616,7 @@ def snapgene_file_to_dict(filepath=None, fileobject=None):
             "features": [],
             "primers": [],
             "alignable_sequences": [],
+            "comparison_alignments": [],
             "raw_blocks_summary": [],
         }
         alignable_sequence_blocks = []
@@ -363,10 +667,19 @@ def snapgene_file_to_dict(filepath=None, fileobject=None):
                 alignable_metadata.update(
                     _parse_alignable_metadata_block(block_content, block_summary)
                 )
+            elif block_type == 27:
+                data["comparison_alignments"].extend(
+                    _parse_comparison_block(
+                        block_content,
+                        block_summary,
+                        data.get("seq", ""),
+                    )
+                )
 
         data["alignable_sequences"] = _merge_alignable_sequences(
             alignable_sequence_blocks, alignable_metadata
         )
+        _enrich_comparison_records(data["comparison_alignments"], alignable_metadata)
         return data
     finally:
         if close_file:
