@@ -21,12 +21,6 @@ MIT 许可证开源项目
 ## 本地开发安装
 
 ```bash
-/home/karl/miniconda3/bin/python -m pip install -e .
-```
-
-也可以在普通 Python 环境中安装：
-
-```bash
 python -m pip install -e .
 ```
 

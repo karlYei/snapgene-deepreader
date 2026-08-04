@@ -20,7 +20,7 @@ alignable sequence extraction, tests, and project documentation.
 ## Install for local development
 
 ```bash
-/home/karl/miniconda3/bin/python -m pip install -e .
+python -m pip install -e .
 ```
 
 ## Usage
