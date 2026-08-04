@@ -1,5 +1,7 @@
 # snapgene-deepreader
 
+[English](README.md) | [中文](README.zh-CN.md)
+
 `snapgene-deepreader` is an enhanced SnapGene `.dna` parser based on the
 MIT-licensed SnapGeneReader project. It keeps the original high-level API while
 adding extraction of primer blocks and SnapGene alignable sequence blocks.
