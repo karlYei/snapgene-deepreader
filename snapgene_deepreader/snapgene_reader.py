@@ -15,6 +15,8 @@ from Bio.Seq import Seq
 from Bio.SeqFeature import FeatureLocation, SeqFeature
 from Bio.SeqRecord import SeqRecord
 
+from .history import parse_history
+
 try:
     from Bio.Alphabet import DNAAlphabet
 
@@ -621,6 +623,7 @@ def snapgene_file_to_dict(filepath=None, fileobject=None):
         }
         alignable_sequence_blocks = []
         alignable_metadata = {}
+        history_blocks = []
 
         while True:
             block_offset = fileobject.tell()
@@ -657,6 +660,8 @@ def snapgene_file_to_dict(filepath=None, fileobject=None):
                 block_text = block_content.decode("utf-8")
                 note_data = parse_dict(xmltodict.parse(block_text))
                 data["notes"] = note_data["Notes"]
+            elif block_type in (7, 11):
+                history_blocks.append((block_summary, block_content))
             elif block_type == 10:
                 _parse_features_block(block_content, data)
             elif block_type == 16:
@@ -680,6 +685,9 @@ def snapgene_file_to_dict(filepath=None, fileobject=None):
             alignable_sequence_blocks, alignable_metadata
         )
         _enrich_comparison_records(data["comparison_alignments"], alignable_metadata)
+        data["history"] = parse_history(
+            history_blocks, data.get("seq", ""), data.get("dna", {}).get("topology")
+        )
         return data
     finally:
         if close_file:

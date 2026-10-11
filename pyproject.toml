@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "snapgene-deepreader"
-version = "0.2.0"
-description = "Agent-developed SnapGeneReader-derived .dna parser with primer, alignable sequence, and comparison alignment parsing."
+version = "0.3.0"
+description = "Agent-developed SnapGeneReader-derived .dna parser with primers, comparison alignments, and construction history."
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
@@ -17,7 +17,7 @@ dependencies = [
   "html2text",
   "xmltodict"
 ]
-keywords = ["DNA", "SnapGene", "sequence", "primer", "alignment", "BAM", "Biopython"]
+keywords = ["DNA", "SnapGene", "sequence", "primer", "alignment", "BAM", "history", "Biopython"]
 
 [project.urls]
 Homepage = "https://github.com/karlYei/snapgene-deepreader"
