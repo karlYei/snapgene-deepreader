@@ -110,6 +110,60 @@ for node in history["nodes"]:
 原 SeqRecord 和 GenBank API 仍导出当前文件内容。
 这里读取的是文件实际保存的构建历史，不是每次编辑或保存的完整操作日志。
 
+## 节点注释、步骤引物与隐藏状态
+
+0.4.0 版本进一步输出各历史节点实际保存的信息：
+
+- `features`、`primers`、`notes`、`primer_settings`：节点 DNA 的特征、附着引物、
+  备注和杂交设置。已匹配的快照优先于树中注释；经验证的当前节点使用当前文档。
+  `annotation_sources` 标记各字段来源。没有保存的数据返回空值，不从其他节点继承。
+- `tree_features`、`tree_primers`：单独保留历史树中的注释。它们可能只是后续操作
+  相关的精简选择，而快照保存更完整的附着引物。
+- `used_primers`：步骤 `Oligo` 中保存的名称、序列、描述及原始属性，
+  **不同于该节点 DNA 附着的 `primers`**。按序列匹配直接输入模板的记录，
+  忽略序列大小写，同名记录优先；结合位置优先采用树中的步骤相关选择，
+  没有时才采用快照记录。快照可能包含额外低温匹配位点。
+  每个位点保留 `template_key`、`source`、`evidence`、`bound_strand`、
+  `annealed_bases`、`melting_temperature`、`simplified` 和 `components`。
+- `parameters`、`history_colors`、`inputs`、`consumer_keys`：步骤参数、颜色和双向
+  依赖关系。仅当数量一致时，按保存顺序将 InputSummary 对应到输入节点。
+  其他 XML 保留在 `properties`；有 `snapshot_index` 时，可通过
+  `history["snapshots"][node["snapshot_index"]]` 获取完整的快照 XML 和二进制包摘要。
+- `annotation_errors`：注释局部失败不会丢弃节点或已经恢复的序列。
+
+引物位点 `location` 和组件 `hybridized_range` 保留原始字符串；可识别区间另外提供
+`region`，其中 `start`、`end` **从 0 开始且包含两端**，
+`coordinate_system` 标识坐标制，`wraps_origin` 标记跨原点区间。
+feature 的 `start`/`end` 仍是从 0 开始的左闭右开区间，原始 Segment XML 区间则
+从 1 开始且包含两端。InputSummary 的值不做通用坐标换算，其含义依赖具体操作。
+步骤保存的 Oligo 不一定是真实库存引物，例如部分操作使用虚拟的 `Fused.FOR`。
+
+`binding_sites_status="unavailable"` 表示没有找到文件保存的匹配位点，
+不会根据名称猜测位置、正反向角色或引物配对。没有快照的历史序列仍标记为
+unavailable，但保存的其他信息仍可读取。
+
+```python
+for node in data["history"]["nodes"]:
+    print(node["name"], node["operation"], node["is_visible"])
+    print(node.get("sequence"), node["features"], node["primers"])
+    for primer in node["used_primers"]:
+        print(primer["name"], primer["sequence"], primer["binding_sites"])
+```
+
+`hide_history` 解析文件中 `hideHistory` 标记：它隐藏该节点**更早的输入子树**，
+而不是隐藏边界节点本身，也不影响兄弟分支。`is_visible` 是计算后的显示状态；
+`hidden_by` 列出导致隐藏的下游边界节点 key。隐藏节点仍完整解析并返回。
+树中另有 `visible_node_keys`、`hidden_node_keys`、`unknown_visibility_node_keys`。
+未知标记会使受影响的上游节点显示状态为 `None`，而不是猜测。
+feature 自身的 `visible` 与历史节点隐藏状态分别处理。
+
+多属性 feature qualifier（例如同时有 `bool`、`text`、`predef` 的 inference）
+不再因固定长度解包而报错。复杂值保留全部字段，重复值不被合并丢弃，
+`qualifier_values` 保留原始 XML 映射，feature/primer 的 `attributes` 保留额外属性。
+简单注释的已有表示继续支持。复杂注释在 SeqRecord/GenBank 中编码为 JSON 文本；
+GenBank 正确转义引号，并转换单片段 feature 的坐标。
+这些历史注释不保证组成完整历史 SeqRecord；原导出 API 仍导出当前文档。
+
 ## 兼容性
 
 本项目提供与 `snapgene-reader` 相同调用方式的函数：

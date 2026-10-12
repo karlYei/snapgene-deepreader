@@ -403,7 +403,7 @@ def _recover(history, current_sequence, topology):
             )
 
 
-def parse_history(blocks, current_sequence="", topology=None):
+def parse_history(blocks, current_sequence="", topology=None, current_document=None):
     """Return history trees, occurrence-keyed nodes, recovery data and errors.
 
     Unknown encodings remain inspectable and never replace the document sequence.
@@ -438,4 +438,7 @@ def parse_history(blocks, current_sequence="", topology=None):
         except (ValueError, ET.ParseError, lzma.LZMAError, struct.error) as exc:
             history["parse_errors"].append(dict(_source(summary), parse_error=str(exc)))
     _recover(history, current_sequence, topology)
+    from .history_details import enrich_history
+
+    enrich_history(history, current_document)
     return history

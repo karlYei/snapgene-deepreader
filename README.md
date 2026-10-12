@@ -119,6 +119,71 @@ The original SeqRecord and GenBank APIs still export the current document.
 History represents construction data actually saved in the file, not a complete
 log of every edit or save.
 
+## Node Annotations, Step Primers And Visibility
+
+Version 0.4.0 exposes the annotations actually saved for each historical node:
+
+- `features`, `primers`, `notes`, `primer_settings`: node DNA annotations. A matched
+  snapshot takes precedence over tree annotations; the current document takes
+  precedence for the validated current node. `annotation_sources` identifies
+  the source of each field. Missing records give empty values, not inherited
+  annotations from a different molecule.
+- `tree_features`, `tree_primers`: the tree's annotations, kept separately from
+  the full snapshot. These may be a reduced selection relevant to a later step.
+- `used_primers`: each step's saved `Oligo` name, sequence, description and raw
+  attributes. This is distinct from `primers` attached to its output DNA. Binding
+  sites are linked to direct input templates by matching saved primer sequences
+  (case-insensitive, preferring a matching name). Operation-specific tree sites
+  take precedence; snapshot sites are a fallback and may include extra matches.
+  Sites retain `template_key`, `source`, `evidence`, `bound_strand`,
+  `annealed_bases`, `melting_temperature`, `simplified` and `components`.
+- `parameters`, `history_colors`, `inputs`, `consumer_keys`: saved step settings,
+  colors and both directions of the dependency graph. Input summaries are paired
+  with inputs in saved order only when their counts agree. Other XML stays in
+  `properties`; snapshot XML and binary packet summaries remain accessible via
+  `history["snapshots"][node["snapshot_index"]]` when that index is present.
+- `annotation_errors`: local annotation problems do not discard a node's sequence.
+
+Binding-site `location` and component `hybridized_range` strings are retained.
+Recognized ranges also have a `region` with **zero-based inclusive** `start` and
+`end`, `coordinate_system`, and `wraps_origin`. Feature `start`/`end` remain
+zero-based half-open; raw feature segment XML ranges remain one-based inclusive.
+`InputSummary` values are retained verbatim: their meanings depend on the saved
+manipulation. A step's oligos are recorded reagents, not necessarily laboratory
+stock primers (some operations save virtual oligos such as `Fused.FOR`).
+
+`binding_sites_status="unavailable"` means the file did not provide a matched
+saved region. The parser does not invent primer positions, a forward/reverse
+role, or a primer pair from names. Missing sequence snapshots also remain
+unavailable; saved metadata can still be read.
+
+```python
+for node in data["history"]["nodes"]:
+    print(node["name"], node["operation"], node["is_visible"])
+    print(node.get("sequence"), node["features"], node["primers"])
+    for primer in node["used_primers"]:
+        print(primer["name"], primer["sequence"], primer["binding_sites"])
+```
+
+`hide_history` parses the node's saved `hideHistory` flag. It hides that node's
+**earlier input subtree**, not the boundary node itself or sibling branches.
+`is_visible` is the effective display state; `hidden_by` lists the downstream
+boundary keys causing the hiding. Hidden nodes are still fully parsed and
+returned. Trees expose `visible_node_keys`, `hidden_node_keys`, and
+`unknown_visibility_node_keys`. Unknown flag values produce an unknown (`None`)
+state for affected upstream nodes rather than guessing. Feature `visible` is
+separate from history-node visibility.
+
+Multi-attribute feature qualifiers (including `bool`/`text`/`predef` inference
+values) no longer fail fixed-length unpacking. Complex values keep all their
+fields, repeated values are not collapsed, and original XML mappings are kept in
+`qualifier_values`; feature and primer `attributes` preserve extra metadata.
+The established simple qualifier representations remain supported. Structured
+qualifier values are serialized as JSON text for SeqRecord/GenBank export;
+GenBank quote escaping and single-segment coordinate conversion are handled.
+Historical annotations do not imply a complete historical SeqRecord: the
+existing export APIs still export the current document.
+
 ## Compatibility
 
 The following functions are provided with the same call style as

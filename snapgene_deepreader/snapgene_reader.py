@@ -5,9 +5,11 @@ primer and alignable sequence blocks observed in SnapGene ``*.dna`` files.
 """
 
 import gzip
+import json
 import re
 import struct
 import zlib
+from copy import deepcopy
 
 import html2text
 import xmltodict
@@ -84,6 +86,8 @@ def _parse_component(component):
     return {
         "hybridized_range": _attr(component, "hybridizedRange"),
         "bases": _attr(component, "bases"),
+        "attributes": _xml_attributes(component),
+        "region": _binding_region(_attr(component, "hybridizedRange")),
     }
 
 
@@ -95,15 +99,39 @@ def _parse_binding_site(site):
         "annealed_bases": _attr(site, "annealedBases"),
         "melting_temperature": _int_attr(site, "meltingTemperature"),
         "components": components,
+        "simplified": _attr(site, "simplified", "0") == "1",
+        "attributes": _xml_attributes(site),
+        "region": _binding_region(_attr(site, "location")),
+    }
+
+
+def _xml_attributes(element):
+    return {key[1:]: value for key, value in element.items() if key.startswith("@")}
+
+
+def _binding_region(location):
+    if not isinstance(location, str):
+        return None
+    match = re.fullmatch(r"(\d+)-(\d+)", location)
+    if match is None:
+        return None
+    start, end = map(int, match.groups())
+    return {
+        "start": start,
+        "end": end,
+        "coordinate_system": "zero_based_inclusive",
+        "wraps_origin": start > end,
     }
 
 
 def _parse_primers_block(block_content, block_summary):
     try:
-        parsed = parse_dict(xmltodict.parse(block_content.decode("utf-8")))
-        primers_root = parsed.get("Primers", {})
+        original = xmltodict.parse(block_content.decode("utf-8"))
+        parsed = parse_dict(deepcopy(original))
+        primers_root = parsed.get("Primers") or {}
         primers = []
-        for primer in _as_list(primers_root.get("Primer")):
+        raw_primers = _as_list((original.get("Primers") or {}).get("Primer"))
+        for index, primer in enumerate(_as_list(primers_root.get("Primer"))):
             binding_sites = [
                 _parse_binding_site(site)
                 for site in _as_list(primer.get("BindingSite"))
@@ -116,6 +144,7 @@ def _parse_primers_block(block_content, block_summary):
                     "description": _attr(primer, "description", ""),
                     "date_added": _attr(primer, "dateAdded"),
                     "binding_sites": binding_sites,
+                    "attributes": _xml_attributes(raw_primers[index]),
                     "raw_block_type": block_summary["type"],
                     "raw_block_size": block_summary["size"],
                     "raw_block_offset": block_summary["offset"],
@@ -216,9 +245,26 @@ def _parse_alignable_sequence_block(block_content, block_summary):
     return entry
 
 
+def _qualifier_value(value):
+    if not isinstance(value, dict):
+        return parse(value)
+    if len(value) == 1:
+        key, content = next(iter(value.items()))
+        return int(content) if key == "@int" else parse(content)
+    # Keep the established two-attribute predefined-value mapping, by name.
+    typed_keys = [key for key in ("@text", "@int") if key in value]
+    if len(value) == 2 and "@predef" in value and len(typed_keys) == 1:
+        key = typed_keys[0]
+        content = int(value[key]) if key == "@int" else parse(value[key])
+        return {value["@predef"]: content}
+    return {
+        key.lstrip("@"): int(content) if key == "@int" else parse(content)
+        for key, content in value.items()
+    }
+
+
 def _parse_features_block(block_content, data):
     strand_dict = {"0": ".", "1": "+", "2": "-", "3": "="}
-    format_dict = {"@text": parse, "@int": int}
     features_data = xmltodict.parse(block_content)
     features = _as_list(features_data.get("Features", {}).get("Feature"))
     for feature in features:
@@ -230,25 +276,19 @@ def _parse_features_block(block_content, data):
         qualifiers = _as_list(feature.get("Q"))
         parsed_qualifiers = {}
         for qualifier in qualifiers:
-            if qualifier["V"] is None:
+            if qualifier.get("V") is None:
                 continue
+            values = [_qualifier_value(value) for value in _as_list(qualifier["V"])]
             if isinstance(qualifier["V"], list):
-                if len(qualifier["V"][0].items()) == 1:
-                    parsed_qualifiers[qualifier["@name"]] = l_v = []
-                    for e_v in qualifier["V"]:
-                        fmt, value = e_v.popitem()
-                        fmt = format_dict.get(fmt, parse)
-                        l_v.append(fmt(value))
+                if all(isinstance(v, dict) and len(v) == 1 for v in values):
+                    merged = {key: val for v in values for key, val in v.items()}
+                    parsed_qualifiers[qualifier["@name"]] = (
+                        merged if len(merged) == len(values) else values
+                    )
                 else:
-                    parsed_qualifiers[qualifier["@name"]] = d_v = {}
-                    for e_v in qualifier["V"]:
-                        (fmt1, value1), (_, value2) = e_v.items()
-                        fmt = format_dict.get(fmt1, parse)
-                        d_v[value2] = fmt(value1)
+                    parsed_qualifiers[qualifier["@name"]] = values
             else:
-                fmt, value = qualifier["V"].popitem()
-                fmt = format_dict.get(fmt, parse)
-                parsed_qualifiers[qualifier["@name"]] = fmt(value)
+                parsed_qualifiers[qualifier["@name"]] = values[0]
 
         if "label" not in parsed_qualifiers:
             parsed_qualifiers["label"] = feature["@name"]
@@ -272,6 +312,9 @@ def _parse_features_block(block_content, data):
                 "row": 0,
                 "isOrf": False,
                 "qualifiers": parsed_qualifiers,
+                "qualifier_values": deepcopy(qualifiers),
+                "attributes": _xml_attributes(feature),
+                "visible": feature.get("@visible", "1") != "0",
             }
         )
 
@@ -686,12 +729,33 @@ def snapgene_file_to_dict(filepath=None, fileobject=None):
         )
         _enrich_comparison_records(data["comparison_alignments"], alignable_metadata)
         data["history"] = parse_history(
-            history_blocks, data.get("seq", ""), data.get("dna", {}).get("topology")
+            history_blocks,
+            data.get("seq", ""),
+            data.get("dna", {}).get("topology"),
+            current_document=data,
         )
         return data
     finally:
         if close_file:
             fileobject.close()
+
+
+def _seqrecord_qualifiers(qualifiers):
+    result = {}
+    for name, value in qualifiers.items():
+        values = value if isinstance(value, list) else [value]
+        if any(isinstance(item, (dict, list)) for item in values):
+            result[name] = [
+                (
+                    json.dumps(item, ensure_ascii=True, sort_keys=True)
+                    if isinstance(item, (dict, list))
+                    else item
+                )
+                for item in values
+            ]
+        else:
+            result[name] = value
+    return result
 
 
 def snapgene_file_to_seqrecord(filepath=None, fileobject=None):
@@ -714,7 +778,7 @@ def snapgene_file_to_seqrecord(filepath=None, fileobject=None):
                     strand=strand_dict[feature["strand"]],
                 ),
                 type=feature["type"],
-                qualifiers=feature["qualifiers"],
+                qualifiers=_seqrecord_qualifiers(feature["qualifiers"]),
             )
             for feature in data["features"]
         ],
@@ -806,7 +870,7 @@ def snapgene_file_to_gbk(read_file_object, write_file_object):
             line = line[:-1] + ")"
         else:
             line = "{}..{}".format(
-                _analyse_gs(feature, "start", default=" "),
+                _analyse_gs(feature, "start", default=0) + 1,
                 _analyse_gs(feature, "end", default=" "),
             )
 
@@ -823,8 +887,8 @@ def snapgene_file_to_gbk(read_file_object, write_file_object):
                 )
             )
 
-        for qualifier_name, qualifier_value in _analyse_gs(
-            feature, "qualifiers", default={}
+        for qualifier_name, qualifier_value in _seqrecord_qualifiers(
+            _analyse_gs(feature, "qualifiers", default={})
         ).items():
             if isinstance(qualifier_value, list):
                 values = qualifier_value
@@ -832,8 +896,8 @@ def snapgene_file_to_gbk(read_file_object, write_file_object):
                 values = [qualifier_value]
             for value in values:
                 wfo.write(
-                    "                     /{}=\"{}\"\n".format(
-                        qualifier_name, str(value).replace('"', "'")
+                    '                     /{}="{}"\n'.format(
+                        qualifier_name, str(value).replace('"', '""')
                     )
                 )
 
